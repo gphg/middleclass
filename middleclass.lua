@@ -4,9 +4,10 @@
 -- This version includes user modifications.
 -- Modified for memory-efficient access to instance class via metatable lookup ('instance.class').
 -- 'rawget(instance, "class")' returns nil.
+-- Modified include method to process mixins in argument order.
 --
 local middleclass = {
-  _VERSION     = 'middleclass v4.1.1 MODIFIED', -- User-modified version string
+  _VERSION     = 'middleclass v4.1.1 MODIFIED-1',
   _DESCRIPTION = 'Object Orientation for Lua',
   _URL         = 'https://github.com/kikito/middleclass',
   _LICENSE     = [[
@@ -35,6 +36,15 @@ local middleclass = {
   ]]
 }
 
+-- Micro-optimization: Localize frequently used global functions
+local type = type
+local assert = assert
+local rawget = rawget
+local pairs = pairs
+local select = select
+local setmetatable = setmetatable
+local getmetatable = getmetatable
+
 --- Creates a wrapper function or table for the instance's __index metavalue.
 -- This handles method lookup, first checking the instance dictionary,
 -- then falling back to a function or a table provided.
@@ -50,22 +60,24 @@ local function _createIndexWrapper(aClass, f)
   -- If fallback is a function, return a function wrapper.
   if type(f) == "function" then
     return function(self, name)
-      local value = rawget(aClass.__instanceDict, name) -- Use rawget to avoid infinite loops
+      -- First, check the instance dictionary for the method/property
+      local value = rawget(aClass.__instanceDict, name)
       if value ~= nil then
         return value
       end
-      -- Call the provided function for the lookup
+      -- If not found in instance dictionary, call the provided fallback function
       return (f(self, name))
     end
   end
 
   -- If fallback is a table, look up the method in that table (implicit type(f) == "table")
   return function(self, name)
-    local value = rawget(aClass.__instanceDict, name) -- Use rawget
+    -- First, check the instance dictionary for the method/property
+    local value = rawget(aClass.__instanceDict, name)
     if value ~= nil then
       return value
     end
-    -- Look up in the provided table
+    -- If not found in instance dictionary, look up in the provided fallback table
     return rawget(f, name) -- Use rawget here too for safety
   end
 end
@@ -106,6 +118,7 @@ local function _declareInstanceMethod(aClass, name, f)
 
   -- If f is nil, the method might be inherited from the superclass
   if f == nil and aClass.super then
+    -- Get the method from the superclass's instance dictionary (which includes propagated methods)
     f = rawget(aClass.super.__instanceDict, name) -- Use rawget to get the super method
   end
 
@@ -134,13 +147,13 @@ local function _createClass(name, super)
   local instanceDict = {}
 
   local aClass = {
-    name = name,                     -- The name of the class (string)
-    super = super,                   -- The superclass table (or nil)
-    static = {},                     -- Table for static methods and properties
-    __instanceDict = instanceDict,   -- Dictionary for instance methods/properties
-    __declaredMethods = {},          -- Tracks methods declared directly by this class
+    name = name,                   -- The name of the class (string)
+    super = super,                 -- The superclass table (or nil)
+    static = {},                   -- Table for static methods and properties
+    __instanceDict = instanceDict, -- Dictionary for instance methods/properties
+    __declaredMethods = {},        -- Tracks methods declared directly by this class
     -- Weak table to keep track of subclasses without preventing garbage collection
-    subclasses = setmetatable({}, {__mode='k'})
+    subclasses = setmetatable({}, { __mode = 'k' })
   }
 
   -- Set the instance dictionary's __index to itself for method lookup
@@ -170,9 +183,9 @@ local function _createClass(name, super)
 
   -- Set up the metatable for the class table itself
   return setmetatable(aClass, {
-    __index = aClass.static,           -- Class methods/properties look in the static table
-    __tostring = _tostring,          -- Allows tostring(class)
-    __call = _call,                  -- Allows Class(...) for Class:new(...)
+    __index = aClass.static,            -- Class methods/properties look in the static table
+    __tostring = _tostring,             -- Allows tostring(class)
+    __call = _call,                     -- Allows Class(...) for Class:new(...)
     __newindex = _declareInstanceMethod -- Handles `Class.method = function(...) ... end` syntax
   })
 end
@@ -190,8 +203,8 @@ local function _includeMixin(aClass, mixin)
   for name, method in pairs(mixin) do
     -- Avoid copying special keys 'included' and 'static'
     if name ~= "included" and name ~= "static" then
-        -- Use _declareInstanceMethod to correctly add and propagate methods
-        _declareInstanceMethod(aClass, name, method)
+      -- Use _declareInstanceMethod to correctly add and propagate methods
+      _declareInstanceMethod(aClass, name, method)
     end
   end
 
@@ -204,9 +217,9 @@ local function _includeMixin(aClass, mixin)
   end
 
   -- Call the 'included' hook on the mixin if it exists
-  if type(mixin.included)=="function" then
-      -- Pass the class being included into to the mixin's included function
-      mixin:included(aClass)
+  if type(mixin.included) == "function" then
+    -- Pass the class being included into to the mixin's included function
+    mixin:included(aClass)
   end
   return aClass
 end
@@ -232,14 +245,14 @@ middleclass.DefaultMixin = {
   isInstanceOf = function(self, aClass)
     -- Check if both self and aClass are tables and self has a 'class' field which is a table
     return type(aClass) == 'table'
-       and type(self) == 'table'
-       and type(self.class) == 'table'
-       and (self.class == aClass -- Check if it's the same class
-            -- Check if the instance's class is a subclass of the given class
-            or (type(self.class.isSubclassOf) == 'function' and self.class:isSubclassOf(aClass)))
+        and type(self) == 'table'
+        and type(self.class) == 'table'
+        and (self.class == aClass -- Check if it's the same class
+          -- Check if the instance's class is a subclass of the given class
+          or (type(self.class.isSubclassOf) == 'function' and self.class:isSubclassOf(aClass)))
   end,
 
-  static = {
+  static       = {
     --- Allocates a new instance table without calling initialize.
     -- Useful for custom construction patterns.
     -- Sets the instance's metatable to the class's instance dictionary.
@@ -290,6 +303,7 @@ middleclass.DefaultMixin = {
       -- This can be overridden by declaring initialize in the subclass
       _declareInstanceMethod(subclass, "initialize", self.initialize)
 
+
       -- Record the new subclass in the superclass's subclasses list
       self.subclasses[subclass] = true
       -- Call the subclassed hook on the superclass
@@ -310,22 +324,28 @@ middleclass.DefaultMixin = {
     -- @return boolean True if this class is a subclass of the other class, false otherwise.
     isSubclassOf = function(self, other)
       -- Ensure 'other' is a table and this class has a superclass
-      return type(other)      == 'table' and
-             type(self.super) == 'table' and
-             ( self.super == other -- Check if the direct super is the 'other' class
-               -- Recursively check if the superclass is a subclass of 'other'
-            or (type(self.super.isSubclassOf) == 'function' and self.super:isSubclassOf(other)) )
+      return type(other) == 'table' and
+          type(self.super) == 'table' and
+          (self.super == other -- Check if the direct super is the 'other' class
+            -- Recursively check if the superclass is a subclass of 'other'
+            or (type(self.super.isSubclassOf) == 'function' and self.super:isSubclassOf(other)))
     end,
 
     --- Includes one or more mixins into the class.
     -- Copies methods and properties from the mixins to the class.
+    -- Mixins are processed in the order they are provided as arguments.
     -- @param self table The class table.
     -- @param ... table One or more mixin tables.
     -- @return table The modified class table (self).
     include = function(self, ...)
       assert(type(self) == 'table', "Make sure you that you are using 'Class:include' with ':' instead of 'Class.include'")
-      for _, mixin in ipairs({...}) do
+      local argc = select("#", ...)
+      for i = 1, argc do
+        local mixin = select(i, ...)
+        -- Only include if the mixin is a table (and not nil)
+        if type(mixin) == 'table' then
           _includeMixin(self, mixin) -- Include each provided mixin
+        end
       end
       return self -- Return the class to allow chaining calls
     end
@@ -352,8 +372,8 @@ end
 
 -- Make the module callable like `local Class = require('middleclass')('MyClass')`
 return setmetatable(middleclass, {
-    __call = function(_, ...)
-        -- Delegate the call to the middleclass.class function
-        return middleclass.class(...)
-    end
+  __call = function(_, ...)
+    -- Delegate the call to the middleclass.class function
+    return middleclass.class(...)
+  end
 })
