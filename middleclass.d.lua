@@ -88,8 +88,6 @@ function Instance:initialize(...) end
 ---@return boolean
 function Instance:isInstanceOf(aClass) end
 
-return middleclass
-
 --[[
 Examples (for editor hints). Uncomment and run these in a Lua environment
 that can `require 'middleclass'` if you want to try them out.
@@ -133,3 +131,5 @@ local e = Employee:new('Bob', 123)
 assert(e.class == Employee)
 print(e:greet(), e.id)
 ]]
+
+return middleclass
