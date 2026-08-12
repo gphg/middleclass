@@ -86,6 +86,10 @@ local function _createClass(name, super)
                    __instanceDict = dict, __declaredMethods = {},
                    subclasses = setmetatable({}, {__mode='k'})  }
 
+  -- put the class reference on the instance dictionary so instances
+  -- get `class` through __index without storing it per-instance
+  dict.class = aClass
+
   if super then
     setmetatable(aClass.static, {
       __index = function(_,k)
@@ -138,7 +142,9 @@ local DefaultMixin = {
   static = {
     allocate = function(self)
       assert(type(self) == 'table', "Make sure that you are using 'Class:allocate' instead of 'Class.allocate'")
-      return setmetatable({ class = self }, self.__instanceDict)
+      -- return an instance WITHOUT attaching `class` as a per-instance key;
+      -- the `class` value is provided via __index on the class's __instanceDict
+      return setmetatable({}, self.__instanceDict)
     end,
 
     new = function(self, ...)
